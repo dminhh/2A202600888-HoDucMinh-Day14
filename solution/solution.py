@@ -565,6 +565,166 @@ class FailureAnalyzer:
 
 
 # ---------------------------------------------------------------------------
+# Bonus — Framework Comparison: DeepEval-Inspired Evaluator (ROUGE-L / LCS)
+# ---------------------------------------------------------------------------
+# Framework 1: RAGASEvaluator  — bag-of-words unigram overlap (already above)
+# Framework 2: DeepEvalInspired — ROUGE-L using Longest Common Subsequence (LCS)
+#
+# Key difference:
+#   RAGAS  (bag-of-words): treats tokens as a SET → order-insensitive
+#   ROUGE-L (LCS):         respects token ORDER → rewards contiguous matches
+#
+# ROUGE-L F1 formula:
+#   P = LCS(answer, ref) / |answer|
+#   R = LCS(answer, ref) / |ref|
+#   F1 = 2 * P * R / (P + R)
+# ---------------------------------------------------------------------------
+
+def _lcs_length(a: list[str], b: list[str]) -> int:
+    """Compute the length of the Longest Common Subsequence of two token lists."""
+    m, n = len(a), len(b)
+    prev = [0] * (n + 1)
+    for i in range(1, m + 1):
+        curr = [0] * (n + 1)
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(curr[j - 1], prev[j])
+        prev = curr
+    return prev[n]
+
+
+def _rouge_l_f1(hypothesis: str, reference: str) -> float:
+    """ROUGE-L F1 between two strings (after tokenization + stopword removal)."""
+    hyp = list(_tokenize(hypothesis))
+    ref = list(_tokenize(reference))
+    if not hyp and not ref:
+        return 1.0
+    if not hyp or not ref:
+        return 0.0
+    lcs = _lcs_length(hyp, ref)
+    precision = lcs / len(hyp)
+    recall = lcs / len(ref)
+    if precision + recall == 0:
+        return 0.0
+    return max(0.0, min(1.0, 2 * precision * recall / (precision + recall)))
+
+
+class DeepEvalInspired:
+    """
+    Framework 2: DeepEval-inspired evaluator using ROUGE-L (LCS-based).
+
+    Unlike RAGASEvaluator (bag-of-words), ROUGE-L rewards answers that match
+    the reference in sequence order — closer to human fluency judgment.
+
+    Metrics mirror RAGASEvaluator for apples-to-apples comparison:
+        faithfulness  — ROUGE-L F1(answer, context)
+        relevance     — ROUGE-L F1(answer, question)
+        completeness  — ROUGE-L F1(answer, expected)
+    """
+
+    def evaluate_faithfulness(self, answer: str, context: str) -> float:
+        return _rouge_l_f1(answer, context)
+
+    def evaluate_relevance(self, answer: str, question: str) -> float:
+        return _rouge_l_f1(answer, question)
+
+    def evaluate_completeness(self, answer: str, expected: str) -> float:
+        return _rouge_l_f1(answer, expected)
+
+    def run_full_eval(
+        self, answer: str, question: str, context: str, expected: str
+    ) -> dict[str, Any]:
+        f = self.evaluate_faithfulness(answer, context)
+        r = self.evaluate_relevance(answer, question)
+        c = self.evaluate_completeness(answer, expected)
+        return {
+            "faithfulness": f,
+            "relevance": r,
+            "completeness": c,
+            "overall": (f + r + c) / 3.0,
+            "passed": f >= 0.5 and r >= 0.5 and c >= 0.5,
+        }
+
+
+def compare_frameworks(
+    qa_pairs: list,
+    agent_fn: Callable[[str], str],
+    ragas: "RAGASEvaluator | None" = None,
+    deepeval: "DeepEvalInspired | None" = None,
+) -> dict[str, Any]:
+    """
+    Run both frameworks on the same dataset and return a comparison report.
+
+    Returns:
+        {
+            "per_pair":  list[dict]  — per-question scores for both frameworks
+            "aggregate": dict        — avg scores + agreement rate
+        }
+    """
+    if ragas is None:
+        ragas = RAGASEvaluator()
+    if deepeval is None:
+        deepeval = DeepEvalInspired()
+
+    per_pair = []
+    for qa in qa_pairs:
+        answer = agent_fn(qa.question)
+
+        r_result = ragas.run_full_eval(answer, qa.question, qa.context, qa.expected_answer)
+        d_result = deepeval.run_full_eval(answer, qa.question, qa.context, qa.expected_answer)
+
+        r_dict = {
+            "faithfulness": r_result.faithfulness,
+            "relevance": r_result.relevance,
+            "completeness": r_result.completeness,
+            "overall": r_result.overall_score(),
+            "passed": r_result.passed,
+        }
+        delta = {
+            k: round(d_result[k] - r_dict[k], 3)
+            for k in ("faithfulness", "relevance", "completeness", "overall")
+        }
+        per_pair.append({
+            "id": qa.metadata.get("id", "?"),
+            "question": qa.question,
+            "ragas": r_dict,
+            "deepeval": d_result,
+            "delta": delta,
+        })
+
+    def _avg(framework: str, key: str) -> float:
+        return sum(p[framework][key] for p in per_pair) / len(per_pair)
+
+    agreement = sum(
+        1 for p in per_pair if p["ragas"]["passed"] == p["deepeval"]["passed"]
+    )
+
+    return {
+        "per_pair": per_pair,
+        "aggregate": {
+            "ragas": {
+                "avg_faithfulness": round(_avg("ragas", "faithfulness"), 3),
+                "avg_relevance":    round(_avg("ragas", "relevance"), 3),
+                "avg_completeness": round(_avg("ragas", "completeness"), 3),
+                "avg_overall":      round(_avg("ragas", "overall"), 3),
+                "pass_count":       sum(1 for p in per_pair if p["ragas"]["passed"]),
+            },
+            "deepeval": {
+                "avg_faithfulness": round(_avg("deepeval", "faithfulness"), 3),
+                "avg_relevance":    round(_avg("deepeval", "relevance"), 3),
+                "avg_completeness": round(_avg("deepeval", "completeness"), 3),
+                "avg_overall":      round(_avg("deepeval", "overall"), 3),
+                "pass_count":       sum(1 for p in per_pair if p["deepeval"]["passed"]),
+            },
+            "agreement_rate": round(agreement / len(per_pair), 3),
+            "total": len(per_pair),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Bonus — Custom Metrics
 # ---------------------------------------------------------------------------
 # Three metrics beyond the basic RAGAS trio:

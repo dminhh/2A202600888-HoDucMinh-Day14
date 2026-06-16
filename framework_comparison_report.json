@@ -1,0 +1,18 @@
+{
+  "ragas": {
+    "avg_faithfulness": 0.422,
+    "avg_relevance": 0.359,
+    "avg_completeness": 0.539,
+    "avg_overall": 0.44,
+    "pass_count": 2
+  },
+  "deepeval": {
+    "avg_faithfulness": 0.359,
+    "avg_relevance": 0.211,
+    "avg_completeness": 0.563,
+    "avg_overall": 0.377,
+    "pass_count": 0
+  },
+  "agreement_rate": 0.9,
+  "total": 20
+}
