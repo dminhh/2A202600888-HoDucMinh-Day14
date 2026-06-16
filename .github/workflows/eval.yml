@@ -1,0 +1,39 @@
+name: AI Evaluation Quality Gate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  eval:
+    name: Run Evaluation Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pytest
+
+      - name: Run pytest (unit tests)
+        run: pytest tests/ -v
+
+      - name: Run benchmark quality gate
+        run: python3 .github/scripts/quality_gate.py
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: benchmark_report.json
