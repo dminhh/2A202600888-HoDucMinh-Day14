@@ -565,6 +565,101 @@ class FailureAnalyzer:
 
 
 # ---------------------------------------------------------------------------
+# Bonus — Custom Metrics
+# ---------------------------------------------------------------------------
+# Three metrics beyond the basic RAGAS trio:
+#   1. Specificity   — how technical/content-rich the answer is (avoids vague filler)
+#   2. Conciseness   — penalizes answers much longer than the expected answer
+#   3. Lexical Diversity — vocabulary richness; avoids repetitive/looping answers
+# ---------------------------------------------------------------------------
+
+class CustomMetrics:
+    """
+    Custom evaluation metrics extending the RAGAS baseline.
+
+    All metrics return float in [0.0, 1.0].
+    Can be combined with RAGASEvaluator scores for a richer overall_score.
+    """
+
+    def evaluate_specificity(self, answer: str) -> float:
+        """
+        Measure how specific/technical the answer is.
+
+        Heuristic: ratio of content words (non-stopwords) to total words.
+        A high ratio means the answer is dense with meaningful terms.
+        A low ratio means it's mostly filler ("it is", "there are", etc.).
+
+        specificity = |content_tokens| / |all_tokens|
+        Returns 1.0 if answer is empty (nothing to penalize).
+        """
+        if not answer:
+            return 1.0
+        all_tokens = re.findall(r"\b\w+\b", answer.lower())
+        if not all_tokens:
+            return 1.0
+        content_tokens = [t for t in all_tokens if t not in STOPWORDS]
+        return max(0.0, min(1.0, len(content_tokens) / len(all_tokens)))
+
+    def evaluate_conciseness(self, answer: str, expected: str) -> float:
+        """
+        Measure how concise the answer is relative to the expected answer.
+
+        Penalizes answers much longer than expected (verbosity).
+        Ideal ratio = 1.0 (same length). Penalty starts when answer is 2x longer.
+
+        score = min(1.0, |expected_tokens| / |answer_tokens|)
+        Returns 1.0 if answer or expected is empty.
+        """
+        answer_tokens = re.findall(r"\b\w+\b", answer.lower())
+        expected_tokens = re.findall(r"\b\w+\b", expected.lower())
+        if not answer_tokens or not expected_tokens:
+            return 1.0
+        ratio = len(expected_tokens) / len(answer_tokens)
+        return max(0.0, min(1.0, ratio))
+
+    def evaluate_lexical_diversity(self, answer: str) -> float:
+        """
+        Measure vocabulary richness of the answer (Type-Token Ratio).
+
+        TTR = unique_tokens / total_tokens
+        A low TTR means the answer repeats words frequently (looping, padding).
+        A high TTR means the answer uses varied vocabulary.
+
+        Returns 1.0 if answer has fewer than 3 tokens.
+        """
+        if not answer:
+            return 1.0
+        all_tokens = re.findall(r"\b\w+\b", answer.lower())
+        if len(all_tokens) < 3:
+            return 1.0
+        ttr = len(set(all_tokens)) / len(all_tokens)
+        return max(0.0, min(1.0, ttr))
+
+    def run_custom_eval(self, answer: str, expected: str) -> dict[str, float]:
+        """
+        Run all 3 custom metrics and return a summary dict.
+
+        Returns:
+            {
+                "specificity":       float,
+                "conciseness":       float,
+                "lexical_diversity": float,
+                "custom_overall":    float,  # mean of the three
+            }
+        """
+        specificity = self.evaluate_specificity(answer)
+        conciseness = self.evaluate_conciseness(answer, expected)
+        lexical_diversity = self.evaluate_lexical_diversity(answer)
+        custom_overall = (specificity + conciseness + lexical_diversity) / 3.0
+        return {
+            "specificity": specificity,
+            "conciseness": conciseness,
+            "lexical_diversity": lexical_diversity,
+            "custom_overall": custom_overall,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Entry point for manual testing
 # ---------------------------------------------------------------------------
 
